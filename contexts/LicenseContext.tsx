@@ -1,5 +1,4 @@
 import React, { createContext, useState, useContext, useEffect, useCallback, ReactNode } from 'react';
-import { invoke } from '@tauri-apps/api/tauri';
 import { LicenseContextType, LicenseLevel } from '../types';
 
 const LicenseContext = createContext<LicenseContextType | undefined>(undefined);
@@ -35,24 +34,35 @@ export const LicenseProvider: React.FC<{ children: ReactNode }> = ({ children })
     setIsLoading(true);
     setError(null);
     
-    try {
-      // Call the Rust backend function via Tauri's invoke API
-      const newLevel = await invoke<LicenseLevel>('validate_license', { licenseKey: key });
+    // Simulate network delay for better UX
+    await new Promise(resolve => setTimeout(resolve, 500));
 
-      setLicenseKey(key);
-      setLicenseLevel(newLevel);
-      localStorage.setItem('licenseKey', key);
-      localStorage.setItem('licenseLevel', newLevel);
+    try {
+      const trimmedKey = key.trim();
+      let newLevel: LicenseLevel | null = null;
+      
+      if (trimmedKey.startsWith("ZM-PRO-")) {
+        newLevel = LicenseLevel.PROFESSIONAL;
+      } else if (trimmedKey.startsWith("ZM-STD-")) {
+        newLevel = LicenseLevel.STANDARD;
+      }
+
+      if (newLevel) {
+        setLicenseKey(trimmedKey);
+        setLicenseLevel(newLevel);
+        localStorage.setItem('licenseKey', trimmedKey);
+        localStorage.setItem('licenseLevel', newLevel);
+      } else {
+        throw new Error('Invalid or unrecognized license key format.');
+      }
     } catch (err: any) {
-      console.error("Error activating license via Tauri:", err);
-      // The error from Rust is typically a string
-      setError(typeof err === 'string' ? err : 'Invalid or expired license key.');
-      // Optional: Keep old license if activation fails, or clear it.
-      // For now, we'll just show the error and let the user retry.
+      console.error("Error activating license:", err);
+      setError(err.message || 'Invalid or expired license key.');
     } finally {
       setIsLoading(false);
     }
   }, []);
+
 
   const isFeatureAllowed = useCallback((requiredLevel: LicenseLevel) => {
     return tierOrder[licenseLevel] >= tierOrder[requiredLevel];
