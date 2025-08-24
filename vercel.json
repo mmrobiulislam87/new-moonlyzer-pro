@@ -1,0 +1,25 @@
+// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+// Define a new Tauri command called "validate_license"
+#[tauri::command]
+fn validate_license(license_key: String) -> (bool, String) {
+    let key = license_key.trim();
+
+    if key.starts_with("ZM-PRO-") {
+        (true, "Professional license is valid.".to_string())
+    } else if key.starts_with("ZM-STD-") {
+        (true, "Field Agent license is valid.".to_string())
+    } else {
+        (false, "Invalid license key prefix.".to_string())
+    }
+}
+
+fn main() {
+    tauri::Builder::default()
+        // Register the validate_license function so it can be called from JavaScript
+        .invoke_handler(tauri::generate_handler![validate_license)
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
