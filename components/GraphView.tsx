@@ -56,13 +56,6 @@ const USAGE_TYPE_COLORS: Record<string, string> = {
   DEFAULT: '#a1a1aa'  // Neutral Gray
 };
 
-const getDefaultEdgeColor = (usageType?: string): string => {
-  if (!usageType) return USAGE_TYPE_COLORS.DEFAULT;
-  const upperUsageType = usageType.toUpperCase();
-  return USAGE_TYPE_COLORS[upperUsageType] || USAGE_TYPE_COLORS.DEFAULT;
-};
-
-
 const PREDEFINED_NODE_AND_EDGE_COLORS = [
   '#ef4444', '#f97316', '#eab308', '#22c55e', '#0ea5e9', '#6366f1', '#ec4899', '#78716c', 
   '#dc2626', '#d97706', '#ca8a04', '#16a34a', '#0284c7', '#4f46e5', '#db2777', '#57534e', 
@@ -388,9 +381,6 @@ const GraphView: React.FC = () => {
     setEdgeContextMenu({visible: false, x:0, y:0, edgeId: null, showEdgeColorPalette: false});
     setIsRenaming(false); setRenameValue("");
   }, []);
-
-  const closeNodeContextMenu = closeAllContextMenus; 
-  const closeEdgeContextMenu = closeAllContextMenus; 
   
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -412,11 +402,9 @@ const GraphView: React.FC = () => {
         activeLayoutRef.current.stop();
     }
     
-    // Get nodes with manually set positions from the ref
     const currentPositions = nodePositionsRef.current;
     const positionedNodes = cy.nodes().filter(node => currentPositions.has(node.id()));
     
-    // Temporarily lock them into their saved positions
     cy.batch(() => {
         positionedNodes.forEach(node => {
             const pos = currentPositions.get(node.id());
@@ -448,15 +436,13 @@ const GraphView: React.FC = () => {
         default:
             currentLayoutOptions = { 
                 name: 'cose', ...coseLayoutOptions, animate: animated, animationDuration: animated ? 500 : 0,
-                randomize: currentPositions.size === 0 // Only randomize if no nodes are manually placed
+                randomize: currentPositions.size === 0 
             };
             break;
     }
 
-    // Run layout on the entire graph; it will respect the locked nodes.
     activeLayoutRef.current = cy.layout(currentLayoutOptions);
     
-    // When the layout is done, unlock the nodes so they can be moved again.
     activeLayoutRef.current.one('layoutstop', () => {
         lockedNodes.unlock();
     });
@@ -546,19 +532,64 @@ const GraphView: React.FC = () => {
   }, [highlightFilters, isHighlightActive, filesToAnalyze]);
 
 
+  // Effect for initialization
   useEffect(() => {
     if (!graphContainerRef.current) return;
     
-    const initialGetDefaultEdgeColor = (usageType?: string): string => {
-      if (!usageType) return USAGE_TYPE_COLORS.DEFAULT;
-      const upperUsageType = usageType.toUpperCase();
-      return USAGE_TYPE_COLORS[upperUsageType] || USAGE_TYPE_COLORS.DEFAULT;
-    };
-
     const cyInstance = cytoscape({
       container: graphContainerRef.current,
       elements: [], 
-      style: [
+      layout: {name: 'preset'}, 
+    });
+
+    cyRef.current = cyInstance;
+
+    const graphContainerElement = graphContainerRef.current;
+    const preventDefaultContextMenu = (event: MouseEvent) => event.preventDefault();
+    graphContainerElement.addEventListener('contextmenu', preventDefaultContextMenu, true);
+    
+    return () => { 
+        if (activeLayoutRef.current && typeof activeLayoutRef.current.stop === 'function') { 
+            activeLayoutRef.current.stop(); activeLayoutRef.current = null; 
+        } 
+        if (graphContainerElement) {
+            graphContainerElement.removeEventListener('contextmenu', preventDefaultContextMenu, true);
+        }
+        if (cyRef.current) { cyRef.current.destroy(); cyRef.current = null; }
+    };
+  }, []); 
+
+  // Effect for updates (data, style, events)
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy || isLoading) return;
+
+    // --- DATA UPDATE ---
+    const currentLayoutName = cy.scratch('_currentLayoutName');
+    const needsLayoutRun = !currentLayoutName || timeFilteredCytoscapeElements.length > (cy.elements().length + 5);
+    
+    cy.batch(() => {
+        cy.elements().remove();
+        cy.add(timeFilteredCytoscapeElements);
+    });
+    
+    cy.nodes().forEach(nodeEle => {
+        if (hiddenNodeIds.has(nodeEle.id())) nodeEle.addClass('hidden-by-user');
+        else nodeEle.removeClass('hidden-by-user');
+    });
+    cy.edges().forEach(edgeEle => {
+        if (hiddenEdgeIds.has(edgeEle.id())) edgeEle.addClass('hidden-by-user');
+        else edgeEle.removeClass('hidden-by-user');
+    });
+
+    // --- STYLE UPDATE ---
+    const getDefaultEdgeColor = (usageType?: string): string => {
+        if (!usageType) return USAGE_TYPE_COLORS.DEFAULT;
+        const upperUsageType = usageType.toUpperCase();
+        return USAGE_TYPE_COLORS[upperUsageType] || USAGE_TYPE_COLORS.DEFAULT;
+    };
+    
+    cy.style([
         {
           selector: 'node',
           style: {
@@ -573,10 +604,7 @@ const GraphView: React.FC = () => {
                 const customIconKey = customNodeBaseIcons.get(ele.id());
                 return customIconKey ? NODE_BASE_ICONS[customIconKey] || NODE_BASE_ICONS.default : NODE_BASE_ICONS.default;
             },
-            'background-fit': 'contain',
-            'background-clip': 'none',
-            'background-width': '60%',
-            'background-height': '60%',
+            'background-fit': 'contain', 'background-clip': 'none', 'background-width': '60%', 'background-height': '60%',
             'background-opacity': (ele: cytoscape.NodeSingular): number => {
                 const customIconKey = customNodeBaseIcons.get(ele.id());
                 return (customIconKey && NODE_BASE_ICONS[customIconKey] !== NODE_BASE_ICONS.default) ? 1 : 0;
@@ -584,10 +612,8 @@ const GraphView: React.FC = () => {
             'label': 'data(label)',
             'width': (ele: cytoscape.NodeSingular): string => `${Math.max(25, Math.min(60, (Number(ele.data('callCount')) || 3) * 1.7 + 18))}px`, 
             'height': (ele: cytoscape.NodeSingular): string => `${Math.max(25, Math.min(60, (Number(ele.data('callCount')) || 3) * 1.7 + 18))}px`,
-            'font-size': 9,
-            'text-valign': (ele: cytoscape.NodeSingular): 'center' | 'bottom' => ele.data('isAPartyNode') ? 'center' : 'bottom',
-            'text-halign': 'center',
-            'text-margin-y': (ele: cytoscape.NodeSingular): number => ele.data('isAPartyNode') ? 0 : 4, 
+            'font-size': 9, 'text-valign': (ele: cytoscape.NodeSingular): 'center' | 'bottom' => ele.data('isAPartyNode') ? 'center' : 'bottom',
+            'text-halign': 'center', 'text-margin-y': (ele: cytoscape.NodeSingular): number => ele.data('isAPartyNode') ? 0 : 4, 
             'color': (ele: cytoscape.NodeSingular): string => {
                  const customIconKey = customNodeBaseIcons.get(ele.id());
                  const hasVisibleIcon = customIconKey && NODE_BASE_ICONS[customIconKey] !== NODE_BASE_ICONS.default;
@@ -602,9 +628,7 @@ const GraphView: React.FC = () => {
                  if (ele.data('isAPartyNode')) return '#B45309'; 
                  return '#ffffff';
             },
-            'text-wrap': 'wrap', 
-            'text-overflow-wrap': 'anywhere', 
-            'text-max-width': (ele: cytoscape.NodeSingular): string => `${(ele.data('isAPartyNode') || (customNodeBaseIcons.get(ele.id()) && NODE_BASE_ICONS[customNodeBaseIcons.get(ele.id())!] !== NODE_BASE_ICONS.default)) ? 85 : 70}px`,
+            'text-wrap': 'wrap', 'text-overflow-wrap': 'anywhere', 'text-max-width': (ele: cytoscape.NodeSingular): string => `${(ele.data('isAPartyNode') || (customNodeBaseIcons.get(ele.id()) && NODE_BASE_ICONS[customNodeBaseIcons.get(ele.id())!] !== NODE_BASE_ICONS.default)) ? 85 : 70}px`,
             'border-width': (ele: cytoscape.NodeSingular): number => (ele.data('isAPartyNode') || ele.data('isHub')) ? 3 : 2, 
             'border-color': (ele: cytoscape.NodeSingular): string => {
                 const customColor = customNodeColors.get(ele.id()); 
@@ -617,40 +641,21 @@ const GraphView: React.FC = () => {
             'transition-duration': 250
           }
         },
-         { 
+        { 
           selector: 'node[?isAPartyNode]',
-          style: {
-            'text-valign': 'center', 
-            'text-halign': 'center', 
-            'text-margin-y': 0,
-            'text-max-width': '85px',
-          }
+          style: { 'text-valign': 'center', 'text-halign': 'center', 'text-margin-y': 0, 'text-max-width': '85px' }
         },
         {
           selector: 'edge',
           style: {
             'width': (ele: cytoscape.EdgeSingular): string => `${Math.max(1.5, Math.min(10, (Number(ele.data('callCount')) || 1) * 1.2))}px`,
-            'line-color': (ele: cytoscape.EdgeSingular): string => {
-                const customColor = customEdgeColors.get(ele.id());
-                return customColor || initialGetDefaultEdgeColor(ele.data('usageType'));
-            },
-            'target-arrow-color': (ele: cytoscape.EdgeSingular): string => {
-                const customColor = customEdgeColors.get(ele.id());
-                return customColor || initialGetDefaultEdgeColor(ele.data('usageType'));
-            },
-            'target-arrow-shape': 'triangle-tee', 
-            'arrow-scale': 1.2, 
-            'curve-style': 'bezier',
-            'label': 'data(label)', 
-            'font-size': 9, 
-            'color': '#374151', 
-            'text-background-opacity': 1, 
-            'text-background-color': '#f8fafc', 
-            'text-background-padding': '2px', 
-            'text-background-shape': 'roundrectangle', 
-            'text-rotation': 'autorotate', 
-            'text-overflow-wrap': 'anywhere', 
-            'text-max-width': '80px',
+            'line-color': (ele: cytoscape.EdgeSingular): string => customEdgeColors.get(ele.id()) || getDefaultEdgeColor(ele.data('usageType')),
+            'target-arrow-color': (ele: cytoscape.EdgeSingular): string => customEdgeColors.get(ele.id()) || getDefaultEdgeColor(ele.data('usageType')),
+            'target-arrow-shape': 'triangle-tee', 'arrow-scale': 1.2, 'curve-style': 'bezier',
+            'label': 'data(label)', 'font-size': 9, 'color': '#374151', 
+            'text-background-opacity': 1, 'text-background-color': '#f8fafc', 
+            'text-background-padding': '2px', 'text-background-shape': 'roundrectangle', 
+            'text-rotation': 'autorotate', 'text-overflow-wrap': 'anywhere', 'text-max-width': '80px',
             'transition-property': 'background-color, line-color, target-arrow-color, border-color, opacity, width, display',
             'transition-duration': 250 
           }
@@ -664,235 +669,102 @@ const GraphView: React.FC = () => {
         { selector: 'edge.user-highlighted', style: { 'line-color': (ele: cytoscape.EdgeSingular): string => DISTINCT_COLORS_HIGHLIGHT[0], 'target-arrow-color': (ele: cytoscape.EdgeSingular): string => DISTINCT_COLORS_HIGHLIGHT[0], 'width': '4px', 'opacity': 1, 'z-index': 90, }}, 
         { selector: '.user-dimmed', style: { 'opacity': 0.15, 'z-index': 1 } },
         { selector: '.hidden-by-user', style: { 'display': 'none' } } 
-      ],
-      layout: {name: 'preset'}, 
-    });
-
-    const graphContainerElement = graphContainerRef.current;
-    const preventDefaultContextMenu = (event: MouseEvent) => {
-      event.preventDefault();
-    };
-    if (graphContainerElement) {
-      graphContainerElement.addEventListener('contextmenu', preventDefaultContextMenu, true);
-    }
+    ]).update();
     
-    cyInstance.on('cxttap', 'node', (event: cytoscape.EventObject) => {
-      closeAllContextMenus();
-      const node = event.target;
-      setNodeContextMenu({ visible: true, x: event.renderedPosition.x, y: event.renderedPosition.y, nodeId: node.id(), currentLabel: node.data('label'), showNodeColorPalette: false, showNodeIconPalette: false });
-    });
-
-    cyInstance.on('cxttap', 'edge', (event: cytoscape.EventObject) => {
-      closeAllContextMenus();
-      const edge = event.target;
-      setEdgeContextMenu({ visible: true, x: event.renderedPosition.y, y: event.renderedPosition.y, edgeId: edge.id(), showEdgeColorPalette: false });
-    });
-
-    cyInstance.on('cxttap', (event: cytoscape.EventObject) => {
-      if (event.target === cyInstance) { 
-        closeAllContextMenus();
+    // Update labels based on custom names
+    graphData.nodes.forEach(nodeDef => {
+      const nodeEle = cy.getElementById(nodeDef.data.id);
+      if (nodeEle.length > 0) {
+        const originalId = nodeDef.data.originalId || nodeDef.data.id;
+        const nodeDataFromContext = nodeDef.data; 
+        const customName = customNodeLabels.get(originalId);
+        
+        let finalDisplayLabel = nodeDataFromContext.label; 
+        if (customName && customName.trim() !== "") { 
+          const statsLabel = `O:${nodeDataFromContext.outgoingCalls || 0} | I:${nodeDataFromContext.incomingCalls || 0}`;
+          let mainPartWithCustomName = `${customName.trim()} (${originalId})`;
+          if (nodeDataFromContext.isAPartyNode) {
+            finalDisplayLabel = mainPartWithCustomName;
+            if (nodeDataFromContext.imei) finalDisplayLabel += `\nIMEI: ${nodeDataFromContext.imei}`;
+            finalDisplayLabel += `\n${statsLabel}`;
+          } else {
+            finalDisplayLabel = `${mainPartWithCustomName}\n${statsLabel}`;
+          }
+        }
+        if (nodeEle.data('label') !== finalDisplayLabel) nodeEle.data('label', finalDisplayLabel);
       }
     });
 
-
-    cyInstance.on('dragfreeon', 'node', (event) => {
-        const node = event.target;
-        setNodePosition(node.id(), node.position());
-    });
+    // --- EVENT LISTENERS RE-BINDING ---
+    cy.off('tap cxttap dragfreeon mouseover mouseout zoom pan'); // Remove previous listeners to prevent duplicates
     
-    cyInstance.on('tap', 'node', (event) => {
+    cy.on('cxttap', 'node', (event) => {
+        closeAllContextMenus();
         const node = event.target;
-        if (selectedPaletteTool?.type === 'icon' && selectedPaletteTool.value) {
-            setCustomNodeBaseIcon(node.id(), selectedPaletteTool.value);
-            setSelectedPaletteTool(null); 
-        } else if (selectedPaletteTool?.type === 'color') {
-             setCustomNodeColor(node.id(), selectedPaletteTool.value);
-            setSelectedPaletteTool(null); 
-        } else {
-            closeAllContextMenus();
-        }
+        setNodeContextMenu({ visible: true, x: event.renderedPosition.x, y: event.renderedPosition.y, nodeId: node.id(), currentLabel: node.data('label'), showNodeColorPalette: false, showNodeIconPalette: false });
     });
-    cyInstance.on('tap', 'edge', (event) => {
+    cy.on('cxttap', 'edge', (event) => {
+        closeAllContextMenus();
         const edge = event.target;
-        if (selectedPaletteTool?.type === 'color') {
-            setCustomEdgeColor(edge.id(), selectedPaletteTool.value);
-            setSelectedPaletteTool(null); 
-        } else {
-            closeAllContextMenus();
-        }
+        setEdgeContextMenu({ visible: true, x: event.renderedPosition.y, y: event.renderedPosition.y, edgeId: edge.id(), showEdgeColorPalette: false });
     });
-    cyInstance.on('tap', (event) => { 
-      if (event.target === cyInstance) { 
-        closeAllContextMenus();
-        setSelectedPaletteTool(null); 
-      }
+    cy.on('cxttap', (event) => { if (event.target === cy) { closeAllContextMenus(); }});
+    cy.on('dragfreeon', 'node', (event) => { setNodePosition(event.target.id(), event.target.position()); });
+    cy.on('tap', 'node', (event) => {
+        const node = event.target;
+        if (selectedPaletteTool?.type === 'icon' && selectedPaletteTool.value) { setCustomNodeBaseIcon(node.id(), selectedPaletteTool.value); setSelectedPaletteTool(null); } 
+        else if (selectedPaletteTool?.type === 'color') { setCustomNodeColor(node.id(), selectedPaletteTool.value); setSelectedPaletteTool(null); } 
+        else { closeAllContextMenus(); }
     });
-    cyInstance.on('zoom pan', () => { 
-      closeAllContextMenus();
-      setTooltip(prev => ({ ...prev, visible: false }));
+    cy.on('tap', 'edge', (event) => {
+        const edge = event.target;
+        if (selectedPaletteTool?.type === 'color') { setCustomEdgeColor(edge.id(), selectedPaletteTool.value); setSelectedPaletteTool(null); } 
+        else { closeAllContextMenus(); }
     });
-
-    const commonTooltipStyle = "text-xs space-y-0.5 text-textPrimary"; 
-    cyInstance.on('mouseover', 'node', (evt) => { 
-      const node = evt.target; const nodeData = node.data();
-      const pos = calculateTooltipPosition(evt.originalEvent.clientX, evt.originalEvent.clientY, window.innerWidth, window.innerHeight);
-      const tooltipContent = (<div className={commonTooltipStyle}> <p><strong>{customNodeLabels.get(nodeData.id) || nodeData.id}</strong> {nodeData.isAPartyNode ? '(AParty)' : ''} {nodeData.isHub ? <span className="text-xs font-bold text-danger-dark">(HUB)</span> : ''}</p> <p>Total Interactions: {nodeData.callCount || 0}</p> <p>Outgoing: {nodeData.outgoingCalls || 0} | Incoming: {nodeData.incomingCalls || 0}</p> <p>Total Duration: {formatDurationDisplay(nodeData.totalDuration || 0)}</p> {nodeData.firstSeenTimestamp && <p>First Seen: {formatDateFromTimestamp(nodeData.firstSeenTimestamp)}</p>} {nodeData.lastSeenTimestamp && <p>Last Seen: {formatDateFromTimestamp(nodeData.lastSeenTimestamp)}</p>} {nodeData.associatedTowers && nodeData.associatedTowers.length > 0 && <p className="max-w-[280px] truncate">Towers: {nodeData.associatedTowers.join(', ')}</p>} {nodeData.rawFileNames && nodeData.rawFileNames.length > 0 && <p className="max-w-[280px] truncate">Files: {nodeData.rawFileNames.join(', ')}</p>} {nodeData.imei && <p>IMEI (last seen): {nodeData.imei}</p>} </div>);
-      setTooltip({ visible: true, content: tooltipContent, x: pos.x, y: pos.y });
-    });
-    cyInstance.on('mouseout', 'node', () => setTooltip(prev => ({ ...prev, visible: false })));
-    cyInstance.on('mouseover', 'edge', (evt) => { 
-      const edge = evt.target; const edgeData = edge.data();
-      const pos = calculateTooltipPosition(evt.originalEvent.clientX, evt.originalEvent.clientY, window.innerWidth, window.innerHeight);
-      const tooltipContent = (<div className={commonTooltipStyle}> <p>From: <strong>{customNodeLabels.get(edgeData.source) || edgeData.source}</strong> To: <strong>{customNodeLabels.get(edgeData.target) || edgeData.target}</strong></p> <p>Type: {edgeData.usageType || 'N/A'}</p> <p>Interactions: {edgeData.callCount || 0}</p> <p>Total Duration: {formatDurationDisplay(edgeData.durationSum || 0)}</p> {edgeData.firstCallTimestamp && <p>First Interaction: {formatDateFromTimestamp(edgeData.firstCallTimestamp)}</p>} {edgeData.lastCallTimestamp && <p>Last Interaction: {formatDateFromTimestamp(edgeData.lastCallTimestamp)}</p>} {edgeData.rawFileNamesForEdge && edgeData.rawFileNamesForEdge.length > 0 && <p className="max-w-[280px] truncate">Files: {edgeData.rawFileNamesForEdge.join(', ')}</p>} </div>);
-      setTooltip({ visible: true, content: tooltipContent, x: pos.x, y: pos.y });
-    });
-    cyInstance.on('mouseout', 'edge', () => setTooltip(prev => ({ ...prev, visible: false })));
-
-    cyRef.current = cyInstance;
-    if (cyRef.current) cyRef.current.scratch('_currentLayoutName' as any, 'preset' as any);
+    cy.on('tap', (event) => { if (event.target === cy) { closeAllContextMenus(); setSelectedPaletteTool(null); }});
+    cy.on('zoom pan', () => { closeAllContextMenus(); setTooltip(prev => ({ ...prev, visible: false })); });
     
-    return () => { 
-        if (activeLayoutRef.current && typeof activeLayoutRef.current.stop === 'function') { 
-            activeLayoutRef.current.stop(); activeLayoutRef.current = null; 
-        } 
-        if (graphContainerElement) {
-            graphContainerElement.removeEventListener('contextmenu', preventDefaultContextMenu, true);
-        }
-        if (cyRef.current) { cyRef.current.destroy(); cyRef.current = null; }
-    };
-  }, []); 
+    // --- TOOLTIPS ---
+    const commonTooltipStyle = "text-xs space-y-0.5 text-textPrimary"; 
+    cy.on('mouseover', 'node', (evt) => { 
+        const node = evt.target; const nodeData = node.data();
+        const pos = calculateTooltipPosition(evt.originalEvent.clientX, evt.originalEvent.clientY, window.innerWidth, window.innerHeight);
+        const tooltipContent = (<div className={commonTooltipStyle}> <p><strong>{customNodeLabels.get(nodeData.id) || nodeData.id}</strong> {nodeData.isAPartyNode ? '(AParty)' : ''} {nodeData.isHub ? <span className="text-xs font-bold text-danger-dark">(HUB)</span> : ''}</p> <p>Total Interactions: {nodeData.callCount || 0}</p> <p>Outgoing: {nodeData.outgoingCalls || 0} | Incoming: {nodeData.incomingCalls || 0}</p> <p>Total Duration: {formatDurationDisplay(nodeData.totalDuration || 0)}</p> {nodeData.firstSeenTimestamp && <p>First Seen: {formatDateFromTimestamp(nodeData.firstSeenTimestamp)}</p>} {nodeData.lastSeenTimestamp && <p>Last Seen: {formatDateFromTimestamp(nodeData.lastSeenTimestamp)}</p>} {nodeData.associatedTowers && nodeData.associatedTowers.length > 0 && <p className="max-w-[280px] truncate">Towers: {nodeData.associatedTowers.join(', ')}</p>} {nodeData.rawFileNames && nodeData.rawFileNames.length > 0 && <p className="max-w-[280px] truncate">Files: {nodeData.rawFileNames.join(', ')}</p>} {nodeData.imei && <p>IMEI (last seen): {nodeData.imei}</p>} </div>);
+        setTooltip({ visible: true, content: tooltipContent, x: pos.x, y: pos.y });
+    });
+    cy.on('mouseout', 'node', () => setTooltip(prev => ({ ...prev, visible: false })));
+    cy.on('mouseover', 'edge', (evt) => { 
+        const edge = evt.target; const edgeData = edge.data();
+        const pos = calculateTooltipPosition(evt.originalEvent.clientX, evt.originalEvent.clientY, window.innerWidth, window.innerHeight);
+        const tooltipContent = (<div className={commonTooltipStyle}> <p>From: <strong>{customNodeLabels.get(edgeData.source) || edgeData.source}</strong> To: <strong>{customNodeLabels.get(edgeData.target) || edgeData.target}</strong></p> <p>Type: {edgeData.usageType || 'N/A'}</p> <p>Interactions: {edgeData.callCount || 0}</p> <p>Total Duration: {formatDurationDisplay(edgeData.durationSum || 0)}</p> {edgeData.firstCallTimestamp && <p>First Interaction: {formatDateFromTimestamp(edgeData.firstCallTimestamp)}</p>} {edgeData.lastCallTimestamp && <p>Last Interaction: {formatDateFromTimestamp(edgeData.lastCallTimestamp)}</p>} {edgeData.rawFileNamesForEdge && edgeData.rawFileNamesForEdge.length > 0 && <p className="max-w-[280px] truncate">Files: {edgeData.rawFileNamesForEdge.join(', ')}</p>} </div>);
+        setTooltip({ visible: true, content: tooltipContent, x: pos.x, y: pos.y });
+    });
+    cy.on('mouseout', 'edge', () => setTooltip(prev => ({ ...prev, visible: false })));
 
-  useEffect(() => {
-      if (cyRef.current && activeGraphLayout && cyRef.current.nodes().length > 0) {
-          const currentLayoutName = cyRef.current.scratch('_currentLayoutName');
-          // Only re-run if the layout name has changed, to avoid re-running on every data update
-          if (currentLayoutName !== activeGraphLayout) {
-              runAlgorithmicLayout(activeGraphLayout, true);
-          }
-      }
-  }, [activeGraphLayout, runAlgorithmicLayout]);
+    // --- POST-UPDATE ACTIONS ---
+    if (isHighlightActive) { applyHighlightStyles(); } 
+    else if (isPathfindingActive) { const pathNodes = cy.elements('.highlighted-path-node'); if ((pathNodes as any).some((node: any) => node.hasClass('hidden-by-user') || !node.visible())) { handleClearPath(); }} 
+    else { cy.elements().removeClass('highlighted-path-node highlighted-path-edge dimmed-element user-highlighted user-dimmed'); }
 
-  useEffect(() => {
-    if (cyRef.current && !isLoading) {
-        if (activeLayoutRef.current && typeof activeLayoutRef.current.stop === 'function') {
-            activeLayoutRef.current.stop();
-        }
+    if (needsLayoutRun) { runAlgorithmicLayout(activeGraphLayout, true); }
+  }, [
+      timeFilteredCytoscapeElements, isLoading, runAlgorithmicLayout, hiddenNodeIds, hiddenEdgeIds, 
+      customEdgeColors, customNodeLabels, customNodeColors, customNodeBaseIcons, 
+      isHighlightActive, isPathfindingActive, activeGraphLayout, graphData.nodes, 
+      closeAllContextMenus, setNodeContextMenu, setEdgeContextMenu, setNodePosition, 
+      selectedPaletteTool, setCustomNodeBaseIcon, setCustomNodeColor, setSelectedPaletteTool, 
+      setCustomEdgeColor, setTooltip, applyHighlightStyles
+  ]);
 
-        const currentLayoutName = cyRef.current.scratch('_currentLayoutName');
-        const needsLayoutRun = !currentLayoutName || timeFilteredCytoscapeElements.length > (cyRef.current.elements().length + 5);
-
-        cyRef.current.batch(() => {
-            if(cyRef.current) {
-                cyRef.current.elements().remove();
-                cyRef.current.add(timeFilteredCytoscapeElements);
-            }
-        });
-        
-        cyRef.current.nodes().forEach(nodeEle => {
-            if (hiddenNodeIds.has(nodeEle.id())) nodeEle.addClass('hidden-by-user');
-            else nodeEle.removeClass('hidden-by-user');
-        });
-        cyRef.current.edges().forEach(edgeEle => {
-            if (hiddenEdgeIds.has(edgeEle.id())) edgeEle.addClass('hidden-by-user');
-            else edgeEle.removeClass('hidden-by-user');
-        });
-        
-        if (cyRef.current) {
-            const cy = cyRef.current;
-            const getDynamicLineColor = (ele: cytoscape.EdgeSingular): string => {
-                const customColor = customEdgeColors.get(ele.id());
-                return customColor || getDefaultEdgeColor(ele.data('usageType'));
-            };
-            const getDynamicArrowColor = (ele: cytoscape.EdgeSingular): string => {
-                const customColor = customEdgeColors.get(ele.id());
-                return customColor || getDefaultEdgeColor(ele.data('usageType'));
-            };
-            const getDynamicNodeIcon = (ele: cytoscape.NodeSingular): string => {
-                const customIconKey = customNodeBaseIcons.get(ele.id());
-                return customIconKey ? NODE_BASE_ICONS[customIconKey] || NODE_BASE_ICONS.default : NODE_BASE_ICONS.default;
-            };
-             const getDynamicNodeIconOpacity = (ele: cytoscape.NodeSingular): number => {
-                const customIconKey = customNodeBaseIcons.get(ele.id());
-                return (customIconKey && NODE_BASE_ICONS[customIconKey] !== NODE_BASE_ICONS.default) ? 1 : 0;
-            };
-            const getDynamicNodeColor = (ele: cytoscape.NodeSingular): string => {
-                const customColor = customNodeColors.get(ele.id());
-                if (customColor) return customColor;
-                if (ele.data('isAPartyNode')) return '#f59e0b';
-                if (ele.data('isHub')) return '#ef4444';
-                return '#3b82f6';
-            };
-
-
-            cy.style()
-              .selector('edge').style({ 'line-color': getDynamicLineColor, 'target-arrow-color': getDynamicArrowColor })
-              .selector('node').style({ 
-                  'background-image': getDynamicNodeIcon, 
-                  'background-opacity': getDynamicNodeIconOpacity,
-                  'background-color': getDynamicNodeColor,
-                  'border-color': (el: cytoscape.NodeSingular) => {
-                      const customColor = customNodeColors.get(el.id());
-                      if(customColor) return customColor; 
-                      if (el.data('isAPartyNode')) return '#d97706'; 
-                      if (el.data('isHub')) return '#dc2626';   
-                      return '#2563eb'; 
-                  }
-               })
-              .update();
-        }
-        
-        graphData.nodes.forEach(nodeDef => {
-          const nodeEle = cyRef.current!.getElementById(nodeDef.data.id);
-          if (nodeEle.length > 0) {
-            const originalId = nodeDef.data.originalId || nodeDef.data.id;
-            const nodeDataFromContext = nodeDef.data; 
-            const customName = customNodeLabels.get(originalId);
-            
-            let finalDisplayLabel = nodeDataFromContext.label; 
-            if (customName && customName.trim() !== "") { 
-              const statsLabel = `O:${nodeDataFromContext.outgoingCalls || 0} | I:${nodeDataFromContext.incomingCalls || 0}`;
-              let mainPartWithCustomName = `${customName.trim()} (${originalId})`;
-              if (nodeDataFromContext.isAPartyNode) {
-                finalDisplayLabel = mainPartWithCustomName;
-                if (nodeDataFromContext.imei) finalDisplayLabel += `\nIMEI: ${nodeDataFromContext.imei}`;
-                finalDisplayLabel += `\n${statsLabel}`;
-              } else {
-                finalDisplayLabel = `${mainPartWithCustomName}\n${statsLabel}`;
-              }
-            }
-            if (nodeEle.data('label') !== finalDisplayLabel) nodeEle.data('label', finalDisplayLabel);
-          }
-        });
-        
-        if (isHighlightActive) {
-            applyHighlightStyles();
-        } else if (isPathfindingActive) {
-            const pathNodes = cyRef.current.elements('.highlighted-path-node');
-            if ((pathNodes as any).some((node: any) => node.hasClass('hidden-by-user') || !node.visible())) {
-                handleClearPath();
-            }
-        } else {
-             if (cyRef.current) {
-               cyRef.current.elements().removeClass('highlighted-path-node highlighted-path-edge dimmed-element user-highlighted user-dimmed');
-            }
-        }
-
-        if (cyRef.current && timeFilteredCytoscapeElements.some(el => el.group === 'nodes') && needsLayoutRun) {
-            runAlgorithmicLayout(activeGraphLayout, true);
-        }
-    }
-  }, [timeFilteredCytoscapeElements, isLoading, runAlgorithmicLayout, hiddenNodeIds, hiddenEdgeIds, customEdgeColors, customNodeLabels, customNodeColors, customNodeBaseIcons, applyHighlightStyles, graphData.nodes, isHighlightActive, isPathfindingActive, activeGraphLayout]);
-
-
-  const handleHideNodeContextMenu = () => { if (nodeContextMenu.nodeId) hideNode(nodeContextMenu.nodeId); closeNodeContextMenu(); };
-  const handleRenameNodeContextMenu = () => { if (nodeContextMenu.nodeId) { const originalId = nodeContextMenu.nodeId; const currentCustomName = customNodeLabels.get(originalId) || ""; setRenameValue(currentCustomName); setIsRenaming(true); } else closeNodeContextMenu(); };
-  const submitRenameContextMenu = () => { if (nodeContextMenu.nodeId && renameValue.trim()) setCustomNodeLabel(nodeContextMenu.nodeId, renameValue.trim()); else if (nodeContextMenu.nodeId && !renameValue.trim()) removeCustomNodeLabel(nodeContextMenu.nodeId); closeNodeContextMenu(); };
-  const handleToggleEdgeVisibilityContextMenu = () => { if (edgeContextMenu.edgeId) { if (hiddenEdgeIds.has(edgeContextMenu.edgeId)) showEdge(edgeContextMenu.edgeId); else hideEdge(edgeContextMenu.edgeId); } closeEdgeContextMenu(); };
+  const handleHideNodeContextMenu = () => { if (nodeContextMenu.nodeId) hideNode(nodeContextMenu.nodeId); closeAllContextMenus(); };
+  const handleRenameNodeContextMenu = () => { if (nodeContextMenu.nodeId) { const originalId = nodeContextMenu.nodeId; const currentCustomName = customNodeLabels.get(originalId) || ""; setRenameValue(currentCustomName); setIsRenaming(true); } else closeAllContextMenus(); };
+  const submitRenameContextMenu = () => { if (nodeContextMenu.nodeId && renameValue.trim()) setCustomNodeLabel(nodeContextMenu.nodeId, renameValue.trim()); else if (nodeContextMenu.nodeId && !renameValue.trim()) removeCustomNodeLabel(nodeContextMenu.nodeId); closeAllContextMenus(); };
+  const handleToggleEdgeVisibilityContextMenu = () => { if (edgeContextMenu.edgeId) { if (hiddenEdgeIds.has(edgeContextMenu.edgeId)) showEdge(edgeContextMenu.edgeId); else hideEdge(edgeContextMenu.edgeId); } closeAllContextMenus(); };
   
-  const handleResetNodeIcon = () => { if(nodeContextMenu.nodeId) removeCustomNodeBaseIcon(nodeContextMenu.nodeId); closeNodeContextMenu(); };
-  const handleResetNodeColor = () => { if(nodeContextMenu.nodeId) removeCustomNodeColor(nodeContextMenu.nodeId); closeNodeContextMenu(); };
-  const handleResetEdgeColor = () => { if(edgeContextMenu.edgeId) removeCustomEdgeColor(edgeContextMenu.edgeId); closeEdgeContextMenu(); };
-  const handleClearManualPosition = () => { if(nodeContextMenu.nodeId) { removeNodePosition(nodeContextMenu.nodeId); runAlgorithmicLayout(activeGraphLayout, true); } closeNodeContextMenu(); };
+  const handleResetNodeIcon = () => { if(nodeContextMenu.nodeId) removeCustomNodeBaseIcon(nodeContextMenu.nodeId); closeAllContextMenus(); };
+  const handleResetNodeColor = () => { if(nodeContextMenu.nodeId) removeCustomNodeColor(nodeContextMenu.nodeId); closeAllContextMenus(); };
+  const handleResetEdgeColor = () => { if(edgeContextMenu.edgeId) removeCustomEdgeColor(edgeContextMenu.edgeId); closeAllContextMenus(); };
+  const handleClearManualPosition = () => { if(nodeContextMenu.nodeId) { removeNodePosition(nodeContextMenu.nodeId); runAlgorithmicLayout(activeGraphLayout, true); } closeAllContextMenus(); };
 
 
   const downloadPNG = () => { if (cyRef.current) { const png64 = cyRef.current.png({ output: 'base64uri', full: true, scale: 2, bg: '#f8fafc' }); downloadPNGFromBase64(png64, `call_network_graph_${new Date().toISOString().split('T')[0]}.png`); }};
@@ -1132,7 +1004,7 @@ const GraphView: React.FC = () => {
         <div style={{ top: nodeContextMenu.y, left: nodeContextMenu.x }} className="absolute z-50 bg-surface border border-neutral-light rounded-lg shadow-xl py-1.5 text-sm min-w-[240px]" onClick={(e) => e.stopPropagation()}>
             {isRenaming ? (
                 <div className="p-2.5">
-                    <input type="text" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} placeholder="Enter custom name" className="w-full p-1.5 border border-primary-light rounded-md text-xs mb-2 focus:ring-1 focus:ring-primary" autoFocus onKeyDown={(e) => { if (e.key === 'Enter') submitRenameContextMenu(); if (e.key === 'Escape') closeNodeContextMenu(); }}/>
+                    <input type="text" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} placeholder="Enter custom name" className="w-full p-1.5 border border-primary-light rounded-md text-xs mb-2 focus:ring-1 focus:ring-primary" autoFocus onKeyDown={(e) => { if (e.key === 'Enter') submitRenameContextMenu(); if (e.key === 'Escape') closeAllContextMenus(); }}/>
                     <button onClick={submitRenameContextMenu} className="w-full px-3 py-1.5 text-xs bg-primary text-white rounded-md hover:bg-primary-dark">Save Name</button>
                 </div>
             ) : (
@@ -1145,7 +1017,7 @@ const GraphView: React.FC = () => {
                 {nodeContextMenu.showNodeIconPalette && (
                     <div className="p-2 border-t border-neutral-light grid grid-cols-4 gap-1.5 bg-neutral-lightest" onClick={(e) => e.stopPropagation()}>
                         {ICON_PALETTE_ITEMS.map(item => (
-                            <button key={`ctx-icon-${item.key}`} title={item.label} onClick={() => { if(nodeContextMenu.nodeId) setCustomNodeBaseIcon(nodeContextMenu.nodeId, item.key); closeNodeContextMenu();}} className="p-1.5 aspect-square flex flex-col items-center justify-center rounded-md border border-neutral-DEFAULT/30 hover:bg-primary-lighter/60 text-textSecondary hover:text-primary-dark"><div className="text-primary">{React.cloneElement(item.icon, {size: 20})}</div><span className="text-[8px] mt-0.5 text-center">{item.label}</span></button>
+                            <button key={`ctx-icon-${item.key}`} title={item.label} onClick={() => { if(nodeContextMenu.nodeId) setCustomNodeBaseIcon(nodeContextMenu.nodeId, item.key); closeAllContextMenus();}} className="p-1.5 aspect-square flex flex-col items-center justify-center rounded-md border border-neutral-DEFAULT/30 hover:bg-primary-lighter/60 text-textSecondary hover:text-primary-dark"><div className="text-primary">{React.cloneElement(item.icon, {size: 20})}</div><span className="text-[8px] mt-0.5 text-center">{item.label}</span></button>
                         ))}
                         <button onClick={handleResetNodeIcon} title="Reset to default icon" className="p-1.5 aspect-square flex flex-col items-center justify-center rounded-md border border-neutral-DEFAULT/30 hover:bg-danger-lighter text-danger text-center"><CircleSlash size={16}/><span className="text-[8px] mt-0.5">Reset</span></button>
                     </div>
@@ -1154,7 +1026,7 @@ const GraphView: React.FC = () => {
                 {nodeContextMenu.showNodeColorPalette && (
                     <div className="p-2 border-t border-neutral-light grid grid-cols-5 gap-1 bg-neutral-lightest" onClick={(e) => e.stopPropagation()}>
                         {PREDEFINED_NODE_AND_EDGE_COLORS.map(color => (
-                            <button key={`ctx-node-color-${color}`} title={color} onClick={() => { if(nodeContextMenu.nodeId) setCustomNodeColor(nodeContextMenu.nodeId, color); closeNodeContextMenu();}} className="w-5 h-5 rounded-full border border-neutral-DEFAULT/40 hover:ring-1 hover:ring-primary" style={{backgroundColor: color}} />
+                            <button key={`ctx-node-color-${color}`} title={color} onClick={() => { if(nodeContextMenu.nodeId) setCustomNodeColor(nodeContextMenu.nodeId, color); closeAllContextMenus();}} className="w-5 h-5 rounded-full border border-neutral-DEFAULT/40 hover:ring-1 hover:ring-primary" style={{backgroundColor: color}} />
                         ))}
                          <button onClick={handleResetNodeColor} title="Reset to default color" className="w-5 h-5 flex items-center justify-center rounded-full border border-neutral-DEFAULT/40 text-danger hover:bg-danger-lighter"><CircleSlash size={12}/></button>
                     </div>
@@ -1171,7 +1043,7 @@ const GraphView: React.FC = () => {
              {edgeContextMenu.showEdgeColorPalette && (
                 <div className="p-2 border-t border-neutral-light grid grid-cols-5 gap-1 bg-neutral-lightest" onClick={(e) => e.stopPropagation()}>
                     {PREDEFINED_NODE_AND_EDGE_COLORS.map(color => (
-                        <button key={`ctx-edge-color-${color}`} title={color} onClick={() => { if(edgeContextMenu.edgeId) setCustomEdgeColor(edgeContextMenu.edgeId, color); closeEdgeContextMenu();}} className="w-5 h-5 rounded-full border border-neutral-DEFAULT/40 hover:ring-1 hover:ring-primary" style={{backgroundColor: color}} />
+                        <button key={`ctx-edge-color-${color}`} title={color} onClick={() => { if(edgeContextMenu.edgeId) setCustomEdgeColor(edgeContextMenu.edgeId, color); closeAllContextMenus();}} className="w-5 h-5 rounded-full border border-neutral-DEFAULT/40 hover:ring-1 hover:ring-primary" style={{backgroundColor: color}} />
                     ))}
                     <button onClick={handleResetEdgeColor} title="Reset to default color" className="w-5 h-5 flex items-center justify-center rounded-full border border-neutral-DEFAULT/40 text-danger hover:bg-danger-lighter"><CircleSlash size={12}/></button>
                 </div>
